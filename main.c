@@ -19,10 +19,12 @@
 #include "spi.h"
 
 #define PIN_LED PICO_DEFAULT_LED_PIN
-#define PIN_MISO 4
-#define PIN_MOSI 3
+#define PIN_MISO 4 // SDI
+#define PIN_MOSI 3 // SDO
 #define PIN_SCK 2
-#define PIN_CS 1
+#define PIN_CS 1 // SS_B
+#define PIN_CRESET 0
+#define TIMEOUT_MS 1000
 #define BUS_SPI         (1 << 3)
 #define S_SUPPORTED_BUS   BUS_SPI
 #define S_CMD_MAP ( \
@@ -235,12 +237,35 @@ int main() {
     gpio_init(PIN_LED);
     gpio_set_dir(PIN_LED, GPIO_OUT);
 
+    gpio_init(PIN_CRESET);
+
     // Command handling
     while(1) {
-        int command = getchar();
 
+         while (getchar_timeout_us(0) == PICO_ERROR_TIMEOUT) {
+            tight_loop_contents();
+        }
+        absolute_time_t last_byte_time = get_absolute_time();
+
+        gpio_set_dir(PIN_CRESET, GPIO_OUT);
+        // The CRESET state should change before and after full bytestream is sent
+        gpio_put(PIN_CRESET, 0); // The cdone-LED on the board should turn off
         gpio_put(PIN_LED, 1);
-        process(&spi, command);
+        while (1) {
+            int command = getchar_timeout_us(0);
+            if (command != PICO_ERROR_TIMEOUT) {
+                process(&spi, command);
+                last_byte_time = get_absolute_time();
+            } else {
+                // Since bytestream length is unknown, use timeout to find the end
+                if (absolute_time_diff_us(last_byte_time, get_absolute_time()) > (TIMEOUT_MS * 1000)) {
+                    break;
+                }
+            }
+            tight_loop_contents();
+        }
+        gpio_set_dir(PIN_CRESET, GPIO_IN); // Deassert CRESET to let the iCE40 read the configuration from the bus
+        gpio_disable_pulls(PIN_CRESET);
         gpio_put(PIN_LED, 0);
     }
 
